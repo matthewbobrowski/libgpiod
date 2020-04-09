@@ -57,6 +57,9 @@ struct gpiod_line {
 	 */
 	int state;
 
+	/* Is this line being watched for state change events? */
+	bool watched;
+
 	struct gpiod_chip *chip;
 	struct line_fd_handle *fd_handle;
 
@@ -258,8 +261,136 @@ unsigned int gpiod_chip_num_lines(struct gpiod_chip *chip)
 	return chip->num_lines;
 }
 
-struct gpiod_line *
-gpiod_chip_get_line(struct gpiod_chip *chip, unsigned int offset)
+int gpiod_chip_watch_event_wait(struct gpiod_chip *chip,
+				const struct timespec *timeout)
+{
+	struct pollfd pfd;
+	int fd, ret;
+
+	fd = gpiod_chip_watch_get_fd(chip);
+	if (fd < 0)
+		return -1;
+
+	memset(&pfd, 0, sizeof(pfd));
+	pfd.fd = fd;
+	pfd.events = POLLIN | POLLPRI;
+
+	ret = ppoll(&pfd, 1, timeout, NULL);
+	if (ret < 0)
+		return -1;
+	else if (ret == 0)
+		return 0;
+
+	return 1;
+}
+
+int gpiod_chip_watch_event_read(struct gpiod_chip *chip,
+				struct gpiod_watch_event *event)
+{
+	int ret;
+
+	ret = gpiod_chip_watch_event_read_multiple(chip, event, 1);
+	if (ret < 0)
+		return -1;
+
+	return 0;
+}
+
+static void timestamp_to_timespec(uint64_t from, struct timespec *to)
+{
+	to->tv_sec = from / 1000000000ULL;
+	to->tv_nsec = from % 1000000000ULL;
+}
+
+static void line_update_from_lineinfo(struct gpiod_line *line,
+				      struct gpioline_info *info)
+{
+	line->direction = info->flags & GPIOLINE_FLAG_IS_OUT
+						? GPIOD_LINE_DIRECTION_OUTPUT
+						: GPIOD_LINE_DIRECTION_INPUT;
+	line->active_state = info->flags & GPIOLINE_FLAG_ACTIVE_LOW
+						? GPIOD_LINE_ACTIVE_STATE_LOW
+						: GPIOD_LINE_ACTIVE_STATE_HIGH;
+
+	line->info_flags = info->flags;
+
+	strncpy(line->name, info->name, sizeof(line->name));
+	strncpy(line->consumer, info->consumer, sizeof(line->consumer));
+}
+
+int gpiod_chip_watch_event_read_multiple(struct gpiod_chip *chip,
+					 struct gpiod_watch_event *events,
+					 unsigned int num_events)
+{
+	/*
+	 * 32 is the maximum number of line status events the kernel can
+	 * store in the FIFO so we can allocate the buffer on the stack.
+	 */
+	struct gpioline_info_changed evdata[32], *curr;
+	struct gpiod_watch_event *event;
+	unsigned int i, events_read;
+	struct gpiod_line *line;
+	ssize_t rd;
+	int fd;
+
+	fd = gpiod_chip_watch_get_fd(chip);
+	if (fd < 0)
+		return -1;
+
+	rd = read(fd, &evdata, sizeof(evdata));
+	if (rd < 0) {
+		return -1;
+	} else if ((unsigned int)rd < sizeof(*evdata)) {
+		errno = EIO;
+		return -1;
+	}
+
+	events_read = rd / sizeof(*evdata);
+	if (events_read < num_events)
+		num_events = events_read;
+
+	for (i = 0; i < num_events; i++) {
+		curr = &evdata[i];
+		event = &events[i];
+
+		if (curr->info.line_offset >= chip->num_lines) {
+			/*
+			 * This would be a bizarre kernel error. Use a specific
+			 * errno to make this visible.
+			 */
+			errno = ENXIO;
+			return -1;
+		}
+
+		/*
+		 * Don't use gpiod_chip_get_line() - we want to update it
+		 * directly from the info contained in the event structure.
+		 */
+		line = chip->lines[curr->info.line_offset];
+		line_update_from_lineinfo(line, &curr->info);
+
+		event->line = line;
+		timestamp_to_timespec(curr->timestamp, &event->ts);
+
+		if (curr->event_type == GPIOLINE_CHANGED_REQUESTED)
+			event->event_type = GPIOD_WATCH_EVENT_LINE_REQUESTED;
+		else if (curr->event_type == GPIOLINE_CHANGED_RELEASED)
+			event->event_type = GPIOD_WATCH_EVENT_LINE_RELEASED;
+		else if (curr->event_type == GPIOLINE_CHANGED_CONFIG)
+			event->event_type
+					= GPIOD_WATCH_EVENT_LINE_CONFIG_CHANGE;
+	}
+
+	return num_events;
+}
+
+int gpiod_chip_watch_get_fd(struct gpiod_chip *chip)
+{
+	return chip->fd;
+}
+
+static struct gpiod_line *
+chip_get_line(struct gpiod_chip *chip, unsigned int offset, bool watched)
 {
 	struct gpiod_line *line;
 	int rv;
@@ -291,11 +422,23 @@ gpiod_chip_get_line(struct gpiod_chip *chip, unsigned int offset)
 		line = chip->lines[offset];
 	}
 
-	rv = gpiod_line_update(line);
+	rv = watched ? gpiod_line_watch(line) : gpiod_line_update(line);
 	if (rv < 0)
 		return NULL;
 
 	return line;
+}
+
+struct gpiod_line *
+gpiod_chip_get_line(struct gpiod_chip *chip, unsigned int offset)
+{
+	return chip_get_line(chip, offset, false);
+}
+
+struct gpiod_line *
+gpiod_chip_get_line_watched(struct gpiod_chip *chip, unsigned int offset)
+{
+	return chip_get_line(chip, offset, true);
 }
 
 static struct line_fd_handle *line_make_fd_handle(int fd)
@@ -403,33 +546,6 @@ bool gpiod_line_needs_update(struct gpiod_line *line GPIOD_UNUSED)
 	return false;
 }
 
-int gpiod_line_update(struct gpiod_line *line)
-{
-	struct gpioline_info info;
-	int rv;
-
-	memset(&info, 0, sizeof(info));
-	info.line_offset = line->offset;
-
-	rv = ioctl(line->chip->fd, GPIO_GET_LINEINFO_IOCTL, &info);
-	if (rv < 0)
-		return -1;
-
-	line->direction = info.flags & GPIOLINE_FLAG_IS_OUT
-						? GPIOD_LINE_DIRECTION_OUTPUT
-						: GPIOD_LINE_DIRECTION_INPUT;
-	line->active_state = info.flags & GPIOLINE_FLAG_ACTIVE_LOW
-						? GPIOD_LINE_ACTIVE_STATE_LOW
-						: GPIOD_LINE_ACTIVE_STATE_HIGH;
-
-	line->info_flags = info.flags;
-
-	strncpy(line->name, info.name, sizeof(line->name));
-	strncpy(line->consumer, info.consumer, sizeof(line->consumer));
-
-	return 0;
-}
-
 static bool line_bulk_same_chip(struct gpiod_line_bulk *bulk)
 {
 	struct gpiod_line *first_line, *line;
@@ -453,6 +569,90 @@ static bool line_bulk_same_chip(struct gpiod_line_bulk *bulk)
 	}
 
 	return true;
+}
+
+static int line_update(struct gpiod_line *line, bool watch)
+{
+	struct gpioline_info info;
+	int rv, ioctl_num;
+
+	memset(&info, 0, sizeof(info));
+	ioctl_num = watch ? GPIO_GET_LINEINFO_WATCH_IOCTL
+			  : GPIO_GET_LINEINFO_IOCTL;
+	info.line_offset = line->offset;
+
+	rv = ioctl(line->chip->fd, ioctl_num, &info);
+	if (rv < 0)
+		return -1;
+
+	line_update_from_lineinfo(line, &info);
+
+	if (watch)
+		line->watched = true;
+
+	return 0;
+}
+
+int gpiod_line_update(struct gpiod_line *line)
+{
+	return line_update(line, false);
+}
+
+int gpiod_line_watch(struct gpiod_line *line)
+{
+	return line_update(line, true);
+}
+
+int gpiod_line_watch_bulk(struct gpiod_line_bulk *bulk)
+{
+	struct gpiod_line *line, **lineptr;
+	int ret;
+
+	if (!line_bulk_same_chip(bulk))
+		return -1;
+
+	gpiod_line_bulk_foreach_line(bulk, line, lineptr) {
+		ret = gpiod_line_watch(line);
+		if (ret)
+			gpiod_line_unwatch_bulk(bulk);
+	}
+
+	return 0;
+}
+
+int gpiod_line_unwatch(struct gpiod_line *line)
+{
+	struct gpiod_chip *chip = gpiod_line_get_chip(line);
+	int fd, ret;
+
+	fd = gpiod_chip_watch_get_fd(chip);
+	ret = ioctl(fd, GPIO_GET_LINEINFO_UNWATCH_IOCTL, &line->offset);
+	if (ret == 0)
+		line->watched = false;
+
+	return ret;
+}
+
+int gpiod_line_unwatch_bulk(struct gpiod_line_bulk *bulk)
+{
+	struct gpiod_line *line, **lineptr;
+	int ret = 0;
+
+	if (!line_bulk_same_chip(bulk))
+		return -1;
+
+	gpiod_line_bulk_foreach_line(bulk, line, lineptr) {
+		ret = gpiod_line_unwatch(line);
+		if (ret)
+			break;
+	}
+
+	return ret;
+}
+
+bool gpiod_line_is_watched(struct gpiod_line *line)
+{
+	return line->watched;
 }
 
 static bool line_bulk_all_requested(struct gpiod_line_bulk *bulk)
@@ -1094,8 +1294,7 @@ int gpiod_line_event_read_fd_multiple(int fd, struct gpiod_line_event *events,
 		event->event_type = curr->id == GPIOEVENT_EVENT_RISING_EDGE
 					? GPIOD_LINE_EVENT_RISING_EDGE
 					: GPIOD_LINE_EVENT_FALLING_EDGE;
-		event->ts.tv_sec = curr->timestamp / 1000000000ULL;
-		event->ts.tv_nsec = curr->timestamp % 1000000000ULL;
+		timestamp_to_timespec(curr->timestamp, &event->ts);
 	}
 
 	return i;

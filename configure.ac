@@ -97,11 +97,11 @@ AC_CHECK_HEADERS([linux/version.h], [], [HEADER_NOT_FOUND_LIB([linux/version.h])
 
 AC_COMPILE_IFELSE([AC_LANG_SOURCE(
 #include <linux/version.h>
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 5, 0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 7, 0)
 #error
 #endif
 )],
-[], [AC_MSG_ERROR(["libgpiod needs linux headers version >= v5.5.0"])])
+[], [AC_MSG_ERROR(["libgpiod needs linux headers version >= v5.7.0"])])
 
 AC_ARG_ENABLE([tools],
 	[AC_HELP_STRING([--enable-tools],

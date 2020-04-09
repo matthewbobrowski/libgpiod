@@ -97,8 +97,9 @@ struct gpiod_chip *gpiod_chip_open_lookup(const char *descr)
 	return chip;
 }
 
-int gpiod_chip_get_lines(struct gpiod_chip *chip, unsigned int *offsets,
-			 unsigned int num_offsets, struct gpiod_line_bulk *bulk)
+static int chip_get_lines(struct gpiod_chip *chip, unsigned int *offsets,
+			  unsigned int num_offsets,
+			  struct gpiod_line_bulk *bulk, bool watched)
 {
 	struct gpiod_line *line;
 	unsigned int i;
@@ -106,9 +107,14 @@ int gpiod_chip_get_lines(struct gpiod_chip *chip, unsigned int *offsets,
 	gpiod_line_bulk_init(bulk);
 
 	for (i = 0; i < num_offsets; i++) {
-		line = gpiod_chip_get_line(chip, offsets[i]);
-		if (!line)
+		line = watched ? gpiod_chip_get_line_watched(chip, offsets[i])
+			       : gpiod_chip_get_line(chip, offsets[i]);
+		if (!line) {
+			if (watched)
+				gpiod_chip_unwatch_all(chip);
+
 			return -1;
+		}
 
 		gpiod_line_bulk_add(bulk, line);
 	}
@@ -116,11 +122,25 @@ int gpiod_chip_get_lines(struct gpiod_chip *chip, unsigned int *offsets,
 	return 0;
 }
 
-int gpiod_chip_get_all_lines(struct gpiod_chip *chip,
-			     struct gpiod_line_bulk *bulk)
+int gpiod_chip_get_lines(struct gpiod_chip *chip, unsigned int *offsets,
+			 unsigned int num_offsets, struct gpiod_line_bulk *bulk)
+{
+	return chip_get_lines(chip, offsets, num_offsets, bulk, false);
+}
+
+int gpiod_chip_get_lines_watched(struct gpiod_chip *chip, unsigned int *offsets,
+				 unsigned int num_offsets,
+				 struct gpiod_line_bulk *bulk)
+{
+	return chip_get_lines(chip, offsets, num_offsets, bulk, true);
+}
+
+static int chip_get_all_lines(struct gpiod_chip *chip,
+			      struct gpiod_line_bulk *bulk, bool watched)
 {
 	struct gpiod_line_iter *iter;
 	struct gpiod_line *line;
+	int ret = 0;
 
 	gpiod_line_bulk_init(bulk);
 
@@ -128,20 +148,42 @@ int gpiod_chip_get_all_lines(struct gpiod_chip *chip,
 	if (!iter)
 		return -1;
 
-	gpiod_foreach_line(iter, line)
+	gpiod_foreach_line(iter, line) {
+		if (watched) {
+			ret = gpiod_line_watch(line);
+			if (ret) {
+				gpiod_chip_unwatch_all(chip);
+				break;
+			}
+		}
+
 		gpiod_line_bulk_add(bulk, line);
+	}
 
 	gpiod_line_iter_free(iter);
 
-	return 0;
+	return ret;
 }
 
-struct gpiod_line *
-gpiod_chip_find_line(struct gpiod_chip *chip, const char *name)
+int gpiod_chip_get_all_lines(struct gpiod_chip *chip,
+			     struct gpiod_line_bulk *bulk)
+{
+	return chip_get_all_lines(chip, bulk, false);
+}
+
+int gpiod_chip_get_all_lines_watched(struct gpiod_chip *chip,
+				     struct gpiod_line_bulk *bulk)
+{
+	return chip_get_all_lines(chip, bulk, true);
+}
+
+static struct gpiod_line *chip_find_line(struct gpiod_chip *chip,
+					 const char *name, bool watched)
 {
 	struct gpiod_line_iter *iter;
 	struct gpiod_line *line;
 	const char *tmp;
+	int ret;
 
 	iter = gpiod_line_iter_new(chip);
 	if (!iter)
@@ -151,6 +193,13 @@ gpiod_chip_find_line(struct gpiod_chip *chip, const char *name)
 		tmp = gpiod_line_name(line);
 		if (tmp && strcmp(tmp, name) == 0) {
 			gpiod_line_iter_free(iter);
+
+			if (watched) {
+				ret = gpiod_line_watch(line);
+				if (ret)
+					return NULL;
+			}
+
 			return line;
 		}
 	}
@@ -161,8 +210,20 @@ gpiod_chip_find_line(struct gpiod_chip *chip, const char *name)
 	return NULL;
 }
 
-int gpiod_chip_find_lines(struct gpiod_chip *chip,
-			  const char **names, struct gpiod_line_bulk *bulk)
+struct gpiod_line *
+gpiod_chip_find_line(struct gpiod_chip *chip, const char *name)
+{
+	return chip_find_line(chip, name, false);
+}
+
+struct gpiod_line *
+gpiod_chip_find_line_watched(struct gpiod_chip *chip, const char *name)
+{
+	return chip_find_line(chip, name, true);
+}
+
+int chip_find_lines(struct gpiod_chip *chip, const char **names,
+		    struct gpiod_line_bulk *bulk, bool watched)
 {
 	struct gpiod_line *line;
 	int i;
@@ -170,14 +231,52 @@ int gpiod_chip_find_lines(struct gpiod_chip *chip,
 	gpiod_line_bulk_init(bulk);
 
 	for (i = 0; names[i]; i++) {
-		line = gpiod_chip_find_line(chip, names[i]);
-		if (!line)
+		line = chip_find_line(chip, names[i], watched);
+		if (!line) {
+			if (watched)
+				gpiod_chip_unwatch_all(chip);
+
 			return -1;
+		}
 
 		gpiod_line_bulk_add(bulk, line);
 	}
 
 	return 0;
+}
+
+int gpiod_chip_find_lines(struct gpiod_chip *chip,
+			  const char **names, struct gpiod_line_bulk *bulk)
+{
+	return chip_find_lines(chip, names, bulk, false);
+}
+
+int gpiod_chip_find_lines_watched(struct gpiod_chip *chip, const char **names,
+				  struct gpiod_line_bulk *bulk)
+{
+	return chip_find_lines(chip, names, bulk, true);
+}
+
+int gpiod_chip_unwatch_all(struct gpiod_chip *chip)
+{
+	struct gpiod_line_iter *iter;
+	struct gpiod_line *line;
+	int ret = 0;
+
+	iter = gpiod_line_iter_new(chip);
+	if (!iter)
+		return -1;
+
+	gpiod_foreach_line(iter, line) {
+		ret = gpiod_line_unwatch(line);
+		/* EBUSY means this line is not watched. */
+		if (ret && errno != EBUSY)
+			break;
+	}
+
+	gpiod_line_iter_free(iter);
+
+	return ret;
 }
 
 int gpiod_line_request_input(struct gpiod_line *line, const char *consumer)

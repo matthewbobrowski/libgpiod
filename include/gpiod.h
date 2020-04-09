@@ -676,6 +676,189 @@ int gpiod_chip_find_lines(struct gpiod_chip *chip, const char **names,
 /**
  * @}
  *
+ * @defgroup __line_watch__ Monitoring GPIO line state changes
+ * @{
+ *
+ * These data structures and functions are on the boundary of chip and line
+ * operations. They allow to monitor the changes in state (made by other
+ * processes or the kernel) of GPIO lines exposed by given chip.
+ */
+
+/**
+ * @brief Line watch event types.
+ */
+enum {
+	GPIOD_WATCH_EVENT_LINE_REQUESTED = 1,
+	/**< This line has been requested. */
+	GPIOD_WATCH_EVENT_LINE_RELEASED,
+	/**< This line has been released. */
+	GPIOD_WATCH_EVENT_LINE_CONFIG_CHANGE,
+	/**< This line configuration has changed. */
+};
+
+/**
+ * @brief Structure holding line state event info.
+ */
+struct gpiod_watch_event {
+	struct gpiod_line *line;
+	/**< Handle to the GPIO line with updated information. */
+	int event_type;
+	/**< Type of the watch event. */
+	struct timespec ts;
+	/**< Best estimate of time of event occurrence. */
+};
+
+/**
+ * @brief Wait for state change events on lines exposed by this GPIO chip.
+ * @param chip The GPIO chip object.
+ * @param timeout Wait time limit.
+ * @return 1 if at least one event is queued for reading, 0 if wait timed out,
+ *         -1 if an error occurred.
+ */
+int gpiod_chip_watch_event_wait(struct gpiod_chip *chip,
+				const struct timespec *timeout) GPIOD_API;
+
+/**
+ * @brief Read the next line state change event from this chip.
+ * @param chip The GPIO chip object.
+ * @param event Buffer in which to store the event.
+ * @return 0 on success, -1 on failure.
+ * @note: This call may block if there are not events pending.
+ */
+int gpiod_chip_watch_event_read(struct gpiod_chip *chip,
+				struct gpiod_watch_event *event) GPIOD_API;
+
+/**
+ * @brief Read up to a certain number of line state change events from this
+ *        chip.
+ * @param chip The GPIO chip object.
+ * @param events Buffer in which to store the events.
+ * @param num_events Number of events that can fit in the buffer.
+ * @return On success it returns the number of events stored in the buffer, on
+ *         failure -1 is returned.
+ * @note: This call may block if there are not events pending.
+ */
+int gpiod_chip_watch_event_read_multiple(struct gpiod_chip *chip,
+					 struct gpiod_watch_event *events,
+					 unsigned int num_events) GPIOD_API;
+
+/**
+ * @brief Get the watch event file descriptor.
+ * @param chip The GPIO chip object.
+ * @return Number of the watch event file descriptor.
+ * @note This function always succeeds.
+ */
+int gpiod_chip_watch_get_fd(struct gpiod_chip *chip) GPIOD_API;
+
+/**
+ * @brief Get the handle to the GPIO line at given offset and start watching
+ *        it for state changes.
+ * @param chip The GPIO chip object.
+ * @param offset The offset of the GPIO line.
+ * @return Pointer to the GPIO line handle or NULL if an error occurred.
+ */
+struct gpiod_line *
+gpiod_chip_get_line_watched(struct gpiod_chip *chip,
+			    unsigned int offset) GPIOD_API;
+
+/**
+ * @brief Retrieve a set of lines, start watching them for state change events
+ *        and store them in a line bulk object.
+ * @param chip The GPIO chip object.
+ * @param offsets Array of offsets of lines to retrieve.
+ * @param num_offsets Number of lines to retrieve.
+ * @param bulk Line bulk object in which to store the line handles.
+ * @return 0 on success, -1 on failure.
+ */
+int gpiod_chip_get_lines_watched(struct gpiod_chip *chip,
+				 unsigned int *offsets,
+				 unsigned int num_offsets,
+				 struct gpiod_line_bulk *bulk) GPIOD_API;
+
+/**
+ * @brief Retrieve all lines exposed by a chip, start watching them for state
+ *        change events and store them in a bulk object.
+ * @param chip The GPIO chip object.
+ * @param bulk Line bulk object in which to store the line handles.
+ * @return 0 on success, -1 on error.
+ */
+int gpiod_chip_get_all_lines_watched(struct gpiod_chip *chip,
+				     struct gpiod_line_bulk *bulk) GPIOD_API;
+
+/**
+ * @brief Find a GPIO line by name among lines associated with given GPIO chip
+ *        and start watching it for state change events.
+ * @param chip The GPIO chip object.
+ * @param name The name of the GPIO line.
+ * @return Pointer to the GPIO line handle or NULL if the line could not be
+ *         found or an error occurred.
+ * @note In case a line with given name is not associated with given chip, the
+ *       function sets errno to ENOENT.
+ */
+struct gpiod_line *
+gpiod_chip_find_line_watched(struct gpiod_chip *chip,
+			     const char *name) GPIOD_API;
+
+/**
+ * @brief Find a set of GPIO lines by names among lines exposed by this chip,
+ *        start watching them for state change events and store them in a bulk
+ *        object.
+ * @param chip The GPIO chip object.
+ * @param names Array of pointers to C-strings containing the names of the
+ *              lines to lookup. Must end with a NULL-pointer.
+ * @param bulk Line bulk object in which the located lines will be stored.
+ * @return 0 if all lines were located, -1 on error.
+ * @note If at least one line from the list could not be found among the lines
+ *       exposed by this chip, the function sets errno to ENOENT.
+ */
+int gpiod_chip_find_lines_watched(struct gpiod_chip *chip, const char **names,
+				  struct gpiod_line_bulk *bulk) GPIOD_API;
+
+/**
+ * @brief Start watching the state changes of this GPIO line.
+ * @param line GPIO line to be watched.
+ * @return 0 on success, -1 on failure.
+ */
+int gpiod_line_watch(struct gpiod_line *line) GPIOD_API;
+
+/**
+ * @brief Start watchin the state changes of a set of GPIO lines.
+ * @param bulk Set of GPIO line to watch.
+ * @return 0 on success, -1 on failure.
+ */
+int gpiod_line_watch_bulk(struct gpiod_line_bulk *bulk) GPIOD_API;
+
+/**
+ * @brief Stop watching the state changes of this GPIO line.
+ * @param line GPIO line to stop watching.
+ * @return 0 on success, -1 on failure.
+ */
+int gpiod_line_unwatch(struct gpiod_line *line) GPIOD_API;
+
+/**
+ * @brief Stop watching the state changes of a set of GPIO lines.
+ * @param bulk Set of GPIO line to uwatch.
+ * @return 0 on success, -1 on failure.
+ */
+int gpiod_line_unwatch_bulk(struct gpiod_line_bulk *bulk) GPIOD_API;
+
+/**
+ * @brief Check if a GPIO line is being watched for state change events.
+ * @param line GPIO line to check.
+ * @return True if the line is being watched, false otherwise.
+ */
+bool gpiod_line_is_watched(struct gpiod_line *line) GPIOD_API;
+
+/**
+ * @brief Stop watching all currently watched lines (if any) for this chip.
+ * @param chip GPIO chip the lines of which should no longer be watched.
+ * @return 0 on success, -1 on failure.
+ */
+int gpiod_chip_unwatch_all(struct gpiod_chip *chip) GPIOD_API;
+
+/**
+ * @}
+ *
  * @defgroup __lines__ GPIO line operations
  * @{
  *
