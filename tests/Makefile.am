@@ -27,7 +27,8 @@ gpiod_test_SOURCES =			\
 		tests-event.c		\
 		tests-iter.c		\
 		tests-line.c		\
-		tests-misc.c
+		tests-misc.c		\
+		tests-watch.c
 
 all-local: gpiod-test
 	@echo " ********************************************************"
