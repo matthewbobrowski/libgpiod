@@ -98,6 +98,30 @@ void line_bulk::clear(void)
 	this->_m_bulk.clear();
 }
 
+void line_bulk::watch(void) const
+{
+	::gpiod_line_bulk bulk;
+
+	this->to_line_bulk(::std::addressof(bulk));
+
+	int ret = ::gpiod_line_watch_bulk(::std::addressof(bulk));
+	if (ret)
+		throw ::std::system_error(errno, ::std::system_category(),
+					  "unable to start watching lines for state change events");
+}
+
+void line_bulk::unwatch(void) const
+{
+	::gpiod_line_bulk bulk;
+
+	this->to_line_bulk(::std::addressof(bulk));
+
+	int ret = ::gpiod_line_unwatch_bulk(::std::addressof(bulk));
+	if (ret)
+		throw ::std::system_error(errno, ::std::system_category(),
+					  "error trying to stop watching lines for state change events");
+}
+
 void line_bulk::request(const line_request& config, const ::std::vector<int> default_vals) const
 {
 	this->throw_if_empty();

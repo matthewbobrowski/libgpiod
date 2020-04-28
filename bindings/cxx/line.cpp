@@ -132,6 +132,33 @@ bool line::is_requested(void) const
 	return ::gpiod_line_is_requested(this->_m_line);
 }
 
+void line::watch(void) const
+{
+	this->throw_if_null();
+
+	int ret = ::gpiod_line_watch(this->_m_line);
+	if (ret)
+		throw ::std::system_error(errno, ::std::system_category(),
+					  "unable to start watching GPIO line");
+}
+
+void line::unwatch(void) const
+{
+	this->throw_if_null();
+
+	int ret = ::gpiod_line_unwatch(this->_m_line);
+	if (ret)
+		throw ::std::system_error(errno, ::std::system_category(),
+					  "error trying to stop watching GPIO line");
+}
+
+bool line::is_watched(void) const
+{
+	this->throw_if_null();
+
+	return ::gpiod_line_is_watched(this->_m_line);
+}
+
 /*
  * REVISIT: Check the performance of get/set_value & event_wait compared to
  * the C API. Creating a line_bulk object involves a memory allocation every

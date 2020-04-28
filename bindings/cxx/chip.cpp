@@ -107,14 +107,19 @@ unsigned int chip::num_lines(void) const
 	return ::gpiod_chip_num_lines(this->_m_chip.get());
 }
 
-line chip::get_line(unsigned int offset) const
+line chip::get_line(unsigned int offset, bool watched) const
 {
+	::gpiod_line* line_handle;
+
 	this->throw_if_noref();
 
 	if (offset >= this->num_lines())
 		throw ::std::out_of_range("line offset greater than the number of lines");
 
-	::gpiod_line* line_handle = ::gpiod_chip_get_line(this->_m_chip.get(), offset);
+	if (watched)
+		line_handle = ::gpiod_chip_get_line_watched(this->_m_chip.get(), offset);
+	else
+		line_handle = ::gpiod_chip_get_line(this->_m_chip.get(), offset);
 	if (!line_handle)
 		throw ::std::system_error(errno, ::std::system_category(),
 					  "error getting GPIO line from chip");
@@ -122,11 +127,16 @@ line chip::get_line(unsigned int offset) const
 	return line(line_handle, *this);
 }
 
-line chip::find_line(const ::std::string& name) const
+line chip::find_line(const ::std::string& name, bool watched) const
 {
+	::gpiod_line* handle;
+
 	this->throw_if_noref();
 
-	::gpiod_line* handle = ::gpiod_chip_find_line(this->_m_chip.get(), name.c_str());
+	if (watched)
+		handle = ::gpiod_chip_find_line_watched(this->_m_chip.get(), name.c_str());
+	else
+		handle = ::gpiod_chip_find_line(this->_m_chip.get(), name.c_str());
 	if (!handle && errno != ENOENT)
 		throw ::std::system_error(errno, ::std::system_category(),
 					  "error looking up GPIO line by name");
@@ -134,33 +144,33 @@ line chip::find_line(const ::std::string& name) const
 	return handle ? line(handle, *this) : line();
 }
 
-line_bulk chip::get_lines(const ::std::vector<unsigned int>& offsets) const
+line_bulk chip::get_lines(const ::std::vector<unsigned int>& offsets, bool watched) const
 {
 	line_bulk lines;
 
 	for (auto& it: offsets)
-		lines.append(this->get_line(it));
+		lines.append(this->get_line(it, watched));
 
 	return lines;
 }
 
-line_bulk chip::get_all_lines(void) const
+line_bulk chip::get_all_lines(bool watched) const
 {
 	line_bulk lines;
 
 	for (unsigned int i = 0; i < this->num_lines(); i++)
-		lines.append(this->get_line(i));
+		lines.append(this->get_line(i, watched));
 
 	return lines;
 }
 
-line_bulk chip::find_lines(const ::std::vector<::std::string>& names) const
+line_bulk chip::find_lines(const ::std::vector<::std::string>& names, bool watched) const
 {
 	line_bulk lines;
 	line line;
 
 	for (auto& it: names) {
-		line = this->find_line(it);
+		line = this->find_line(it, watched);
 		if (!line) {
 			lines.clear();
 			return lines;
